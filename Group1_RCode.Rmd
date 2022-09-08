@@ -1,0 +1,582 @@
+---
+title: "Group1_RCode"
+output: pdf_document
+date: '2022-06-25'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Group 1 R Code
+
+Brandon Coates and Jessica Bunge
+
+**Load Libraries**
+
+```{r}
+#Load Libraries
+library(TSA)
+library(ggplot2)
+library(ggpubr)
+library(zoo)
+library(xts)
+library(tsbox)
+library(tseries)
+library(forecast)
+library(sandwich)
+library(lmtest)
+library(AICcmodavg)
+```
+
+## Data Loading, Cleaning, and Exploration
+
+Import the data into R:
+
+```{r}
+#Load data
+climatetrain <- read.csv("DailyDelhiClimateTrain.csv",
+                      stringsAsFactors = FALSE)
+climatetest<- read.csv("DailyDelhiClimateTest.csv",
+                       stringsAsFactors = FALSE)
+```
+
+Next perform data cleaning:
+
+```{r}
+#Remove last row of climate train data 
+climate <- climatetrain[-c(1462),]
+
+#Remove unnecessary variables
+climate <- climate[,-c(3, 4, 5)]
+climatetest <- climatetest[,-c(3, 4, 5)]
+
+#Convert dates to date-time
+#Use climatetest$date <- as.Date(climatetest$date, "%m/%d/%Y")
+#If error occurs during xts reformatting
+climate$date <- as.Date(climate$date)
+class(climate$date)
+
+climatetest$date <- as.Date(climatetest$date)
+class(climatetest$date)
+```
+
+Create initial time series plot:
+
+```{r pressure, echo=FALSE}
+#Plot time series plot
+temp <- qplot(x = date, y = meantemp, data = climate,
+      xlab = "Date", ylab = "Mean Temperature (Celsius)",
+      main = "Mean Daily Temperatures in Delhi")
+temp
+```
+
+Convert data into time series format (xts):
+
+```{r}
+#Convert to xts data format
+climateXTS <- xts(climate[,-1], order.by = climate$date)
+climatetestXTS <- xts(climatetest[,-1], order.by = climatetest$date)
+```
+
+Convert daily temperature records into average monthly temperatures:
+
+```{r}
+#Find mean temperature for each month
+climatemon <- apply.monthly(climateXTS, mean)
+climatetestmon <- apply.monthly(climatetestXTS, mean)
+head(climatemon)
+```
+
+Now convert from xts object format to data frame format:
+
+```{r}
+#Transform to data frame
+climatemonth <- ts_df(climatemon)
+climatetestmonth <- ts_df(climatetestmon)
+head(climatemonth)
+```
+
+Now split the data into training and test set (42 months/9 months) and convert to time series object:
+
+```{r}
+#Assign training and testing set data
+climatetestmonth <- rbind(climatemonth[43:48,], climatetestmonth)
+climatemonth <- climatemonth[-(43:48),]
+
+#Convert data frames to time series objects
+climatemonth <- ts(as.vector(climatemonth$value), start=c(2013,1), end = c(2016, 6), frequency = 12)
+climatetest <- ts(as.vector(climatetestmonth$value), start=c(2016,7), end = c(2017, 3), frequency = 12)
+```
+
+Use the decompose function on the training set to observe the trend components of the model:
+
+```{r}
+#Use decompose to examine components of data series
+decomp1 <- decompose(climatemonth)
+plot(decomp1)
+```
+
+### Check Transformations
+
+To check if log transformation is necessary:
+
+```{r}
+#Check if log transformation is appropriate
+par(mfrow = c(2,1))
+plot(climatemonth, main = "Original")
+abline(lm(climatemonth~time(climatemonth)))
+plot(log(climatemonth), main = "Log Transformed")
+abline(lm(log(climatemonth)~time(log(climatemonth))))
+```
+
+To check if differencing is necessary:
+
+```{r}
+#Differenced vs log-differenced
+plot(diff(climatemonth), main = "Differenced")
+plot(diff(log(climatemonth)), main = "Log difference")
+```
+
+## Model Building
+
+### Seasonal Means Model with Linear Compnent
+
+To build seasonal means model with a linear component:
+
+```{r}
+#Try seasonal means model
+x <- climatemonth
+tm <- time(x)
+month <- season(x)
+model1 <- lm(x ~ tm + month)
+summary(model1)
+```
+
+To check the residuals plot of the model:
+
+```{r}
+#Residual plot for linear component and seasonal means model
+par(mfrow = c(1,1))
+lx1 <- ts(resid(model1), start = c(2013, 1), frequency = 12)
+plot(lx1, main = "Residuals of Seasonal Means and Linear Trend Model", type = 'o')
+abline(h=0, lty = 2)
+```
+
+Plot the time series data with the model fit line:
+
+```{r}
+# data vs fitted line
+plot(x)
+f.lx1=ts(fitted(model1),start=c(2013,1),freq=12)
+lines(f.lx1,col=2,lty=2)
+```
+
+Perform HAC test on components:
+
+```{r}
+#Check significance of variables
+coeftest(model1, vcov=vcovHAC(model1))
+```
+
+#### Model Diagnostics
+
+To check the residuals:
+
+```{r}
+# 1) Residual plot for seasonal means model (zero mean and homoscedasticity)
+plot(rstandard(model1),type="l")
+abline(h=0,col=2)
+```
+
+To check normality via QQ plot:
+
+```{r}
+# 2) QQ plot for seasonal means model (normality)
+qqnorm(lx1)
+qqline(lx1)
+```
+
+Shapiro-Wilk Test and Runs Test:
+
+```{r}
+# 3) Shapiro-Wilk test (normality) and runs test (independence) for seasonal means model
+shapiro.test(lx1)
+runs(lx1)
+```
+
+To check the ACF plot:
+
+```{r}
+# 4) ACF plot for seasonal means model(independence)
+Acf(lx1)
+```
+
+### Seasonal Means with Non-Linear Trend Component
+
+The seasonal means model with a polynomial is created and plotted with the data set:
+
+```{r}
+#Try nonlinear trend with seasonal means model
+tm=time(x)
+tm2=time(x)^2
+model2=lm(x~month+tm+tm2)
+plot(x)
+f.lx2=ts(fitted(model2),start=c(2013,1),freq=12)
+lines(f.lx2,col=2,lty=2)
+lx2=residuals(model2)
+```
+
+#### Model Diagnostics
+
+The residual plot for this model is:
+
+```{r}
+# 1) Residual plot (zero mean and homoscedasticity)
+plot(rstandard(model2),type="o", main = "Non-Linear Trend")
+abline(h=0,col=2)
+```
+
+The QQ plot for the model to check normality:
+
+```{r}
+# 2) QQ plot (normality)
+qqnorm(lx2)
+qqline(lx2)
+```
+
+The Shapiro-Wilk Test and Runs Test results:
+
+```{r}
+# 3) Shapiro-Wilk test (normality) and runs test (independence)
+shapiro.test(lx2)
+runs(lx2)
+```
+
+The ACF plot of the residuals
+
+```{r}
+# 4) ACF plot (independence)
+Acf(lx2)
+#Nonlinear trend does not appear to be necessary for this model
+```
+
+### ARIMA Model Building
+
+Using residuals from seasonal means with linear component model, the need for differencing was examined:
+
+```{r}
+#d = 0
+plot(lx1,type="l")
+Acf(lx1)
+adf.test(lx1)
+pp.test(lx1)
+```
+
+Order for p and q was examined next:
+
+```{r}
+# p & q
+par(mfrow=c(1,2))
+Acf(lx1)
+Pacf(lx1)
+par(mfrow=c(1,1))
+eacf(lx1)
+
+#p=1 and q=1 were found to be best
+```
+
+This suggested MA(1), AR(1), and ARMA(1,1)
+
+#### MA(1) model
+
+The MA(1) model was built:
+
+```{r}
+ma1 <- Arima(lx1, order = c(0,0,1), include.mean = FALSE)
+```
+
+The summary of the MA(1) model:
+
+```{r}
+ma1
+```
+
+#### AR(1) Model
+
+The AR(1) model was built:
+
+```{r}
+ar1 <- Arima(lx1, order = c(1,0,0), include.mean = FALSE)
+```
+
+The summary of the model:
+
+```{r}
+ar1
+```
+
+#### ARMA(1,1)
+
+The ARMA(1,1) model was built:
+
+```{r}
+arma11 <- Arima(lx1, order = c(1,0,1), include.mean = FALSE)
+```
+
+The summary of the model:
+
+```{r}
+arma11
+```
+
+### SARIMA Model
+
+The auto arima function was used to identify a candidate SARIMA model:
+
+```{r}
+#auto arima for SARIMA
+mo <- lm(x ~ tm)
+f0 <- ts(resid(mo), start = c(2013, 1), frequency = 12)
+
+#Fit Auto Arima Model
+aarima <- auto.arima(f0)
+
+```
+
+The summary of the SARIMA(1,0,0)(1,1,0)[12] model was:
+
+```{r}
+aarima
+```
+
+#### Model Diagnostics
+
+The residual plot of the SARIMA model is:
+
+```{r}
+#Residual plot for SARIMA
+plot(rstandard(aarima), type = 'o', main = "Residuals of SARIMA Model")
+abline(h = 0, col = 2)
+```
+
+The QQ plot to assess normality:
+
+```{r}
+qqnorm(rstandard(aarima), main = "Q-Q Plot of Residuals")
+qqline(rstandard(aarima))
+```
+
+Shapiro-Wilk Test and Runs Test for SARIMA model:
+
+```{r}
+shapiro.test(rstandard(aarima))
+runs(rstandard(aarima))
+```
+
+### Candidate Models
+
+Two candidate models were chosen, the AR(1) model from the seasonal means model with the linear component and the SARIMA model
+
+#### AR(1) Model Diagnostics
+
+The diagnostics plot for the AR(1) candidate model:
+
+```{r}
+tsdiag(ar1)
+```
+
+#### SARIMA(1,0,0)(1,1,0)[12] Model Diagnostics
+
+The diagnostics plots for the SARIMA model are:
+
+```{r}
+tsdiag(aarima)
+```
+
+### Model Downselection
+
+Over and underfitting was conducted to find the optimum model for the data set. For the AR(1) model:
+
+```{r}
+#Over and under fitting
+#AR1 model
+ar2<- Arima(lx1, order = c(2, 0, 0), include.mean = FALSE)
+ar2 #additional parameter is not significant
+```
+
+For the SARIMA(1,0,0)(1,1,0)[12] model:
+
+```{r}
+#SARIMA (1,0,0)(1,0,0)12 model
+mod <- Arima(f0,order=c(1,0,0),seasonal=list(order=c(1,0,0)), include.mean = FALSE)
+mod
+mod1 <- Arima(f0,order=c(1,0,0),seasonal=list(order=c(1,1,0)), include.mean = FALSE)
+mod1
+mod2 <- Arima(f0,order=c(1,0,0),seasonal=list(order=c(1,1,1)), include.mean = FALSE)
+mod2 #Found to be best choice
+mod3 <- Arima(f0, order=c(1,1,0),seasonal=list(order=c(1,0,0)), include.mean = FALSE)
+mod3
+mod4 <- Arima(f0,order=c(1,1,0),seasonal=list(order=c(1,1,0)), include.mean = FALSE)
+mod4
+mod5 <- Arima(f0,order=c(1,1,0),seasonal=list(order=c(1,1,1)), include.mean = FALSE)
+mod5
+mod6 <- Arima(f0,order=c(1,1,1),seasonal=list(order=c(1,0,0)), include.mean = FALSE)
+mod6
+mod7 <- Arima(f0,order=c(1,1,1),seasonal=list(order=c(1,1,0)), include.mean = FALSE)
+mod7
+mod8 <- Arima(f0,order=c(1,1,1),seasonal=list(order=c(1,1,1)), include.mean = FALSE)
+mod8
+mod9 <- Arima(f0,order=c(2,0,0),seasonal=list(order=c(1,1,1)), include.mean = FALSE)
+mod9
+mod10 <- Arima(f0,order=c(2,1,0),seasonal=list(order=c(1,1,1)), include.mean = FALSE)
+mod10
+mod11 <- Arima(f0,order=c(2,0,1),seasonal=list(order=c(1,1,1)), include.mean = FALSE)
+mod11
+mod12 <- Arima(f0,order=c(1,0,0),seasonal=list(order=c(2,1,1)), include.mean = FALSE)
+mod12
+```
+
+The final model was chosen to be SARIMA(1,0,0)(1,1,1)[12] model
+
+### Final Model Summary and Diagnostics
+
+The SARIMA(1,0,0)(1,1,1)[12] model was assigned to be the final model:
+
+```{r}
+#Assign chosen final model and check diagnostics
+modfinal <- mod2
+modfinal
+```
+
+The diagnostics plots for this model were:
+
+```{r}
+tsdiag(modfinal)
+```
+
+## Forecasting
+
+### Forecasting on Test Set
+
+The final model was used to forecast the values of the test set:
+
+```{r}
+#Forecasting on test set
+newtm <- seq(from=2016.583, to=2017.25, length = 9)
+newmonth <- as.factor(c("July", "August", "September", "October",
+                            "November", "December", "January", "February", "March"))
+newdata <- data.frame(month=newmonth, tm=newtm)
+predxreg <- predict(mo, newdata)
+
+predx <- predict(modfinal, n.ahead = 9)
+pr <- predx$pred + predxreg
+uci <- pr + 2 * predx$se
+lci <- pr - 2 * predx$se
+
+#Plot forecast
+pr <- ts(pr, start = c(2016,7), end = c(2017, 3), frequency = 12)
+uci <- ts(uci, start = c(2016,7), end = c(2017,3), frequency = 12)
+lci <- ts(lci, start = c(2016,7), end = c(2017,3), frequency = 12)
+
+ymin <- min(c(as.vector(lci), x))-.1
+ymax <- max(c(as.vector(uci), x))+.1
+
+par(mfrow=c(1,1))
+plot(x, xlim = c(2013, 2017.5), ylim = c(0, 40), main = "Mean Monthly Temperature of New Delhi",
+     ylab = "Mean Temperature (Degrees Celsius)")
+lines(pr, col=5)
+lines(uci, col=3, lty = 2)
+lines(lci, col=3, lty =2)
+lines(climatetest, col = 2)
+abline(h = 10, lty = 2)
+legend(2016, 12, legend = c("Forecast", "Test Set", "Upper 95%", "Lower 95%"),
+       col=c(5, 2, 3, 3), lty=c(1, 1, 2, 2), cex=0.8)
+       
+```
+
+The forecast accuracy was then calculated:
+
+```{r}
+#Calculate forecast Accuracy
+accuracy(pr, climatetest)
+```
+
+### Forecasting Mean Temperatures for 10 Years
+
+The model was then used to forecast mean monthly temperatures until 2027:
+
+```{r}
+#Forecast mean temperatures 10 years out
+newtm10 <- seq(from=2016.583, to=2027, length = 126)
+testmonth <- as.factor(c("July", "August", "September", "October",
+                        "November", "December"))
+newmonth <- as.factor(rep(c("January", "February", "March", "April", "May",
+                            "June", "July", "August", "September", "October",
+                            "November", "December"), times = 10))
+month10 <- append(testmonth,newmonth)
+newdata10 <- data.frame(month=month10, tm=newtm10)
+predxreg10 <- predict(mo, newdata10)
+
+predx10 <- predict(modfinal, n.ahead = 126)
+pr10 <- predx10$pred + predxreg10
+uci10 <- pr10 + 2 * predx10$se
+lci10 <- pr10 - 2 * predx10$se
+
+#Plot 10 year forecast
+pr10 <- ts(pr10, start = c(2016,7), end = c(2027, 1), frequency = 12)
+uci10 <- ts(uci10, start = c(2016,7), end = c(2027,1), frequency = 12)
+lci10 <- ts(lci10, start = c(2016,7), end = c(2027,1), frequency = 12)
+
+ymin <- min(c(as.vector(lci10), x))-.1
+ymax <- max(c(as.vector(uci10), x))+.1
+
+plot(x, xlim = c(2013, 2027.5), ylim = c(10,50), main = "Mean Monthly Temperature of New Delhi",
+     ylab = "Mean Temperature (Degrees Celsius)")
+lines(pr10, col=2)
+lines(uci10, col=3, lty = 2)
+lines(lci10, col=3, lty = 2)
+abline(h = 10, lty = 2)
+legend(2023, 18, legend = c("Forecast", "Upper 95%", "Lower 95%"),
+       col=c(2, 3, 3), lty=c(1, 2, 2), cex=0.8)
+```
+
+###  Forecasting Mean Temperatures for 20 Years
+
+The model was used to forecast mean monthly temperatures until 2037:
+
+```{r}
+#Forecast mean temperatures for next 20 years
+newtm20 <- seq(from=2016.583, to=2037, length = 246)
+testmonth <- as.factor(c("July", "August", "September", "October",
+                         "November", "December"))
+newmonth <- as.factor(rep(c("January", "February", "March", "April", "May",
+                            "June", "July", "August", "September", "October",
+                            "November", "December"), times = 20))
+month20 <- append(testmonth,newmonth)
+newdata20 <- data.frame(month=month20, tm=newtm20)
+predxreg20 <- predict(mo, newdata20)
+
+predx20 <- predict(modfinal, n.ahead = 246)
+pr20 <- predx20$pred + predxreg20
+uci20 <- pr20 + 2 * predx20$se
+lci20 <- pr20 - 2 * predx20$se
+
+#Plot 20 year forecast
+pr20 <- ts(pr20, start = c(2016,7), end = c(2037, 1), frequency = 12)
+uci20 <- ts(uci20, start = c(2016,7), end = c(2037,1), frequency = 12)
+lci20 <- ts(lci20, start = c(2016,7), end = c(2037,1), frequency = 12)
+
+ymin <- min(c(as.vector(lci20), x))-.1
+ymax <- max(c(as.vector(uci20), x))+.1
+
+plot(x, xlim = c(2013, 2037.5), ylim = c(10,60), main = "Mean Monthly Temperature of New Delhi",
+     ylab = "Mean Temperature (Degrees Celsius)")
+lines(pr20, col=2)
+lines(uci20, col=3, lty = 2)
+lines(lci20, col=3, lty = 2)
+abline(h = 10, lty = 2)
+legend(2030, 20, legend = c("Forecast", "Upper 95%", "Lower 95%"),
+       col=c(2, 3, 3), lty=c(1, 2, 2), cex=0.8)
+
+```
